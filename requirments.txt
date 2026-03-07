@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+pymupdf
+EbookLib
+beautifulsoup4
+google-generativeai
+reportlab
+pydantic
+httpx

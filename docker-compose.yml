@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  crossword-api:
+    build: .
+    container_name: crossword_fastapi
+    ports:
+      - "8000:8000"
+    environment:
+      # Injection de la clé API depuis ton environnement hôte ou un fichier .env
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    restart: unless-stopped
+    depends_on:
+      - mongo-db
+    volumes:
+      # Optionnel : Montage du dossier courant pour le rechargement à chaud en dév
+      # À commenter en production
+      - .:/app
+
+  mongo-db:
+    image: mongo:latest
+    container_name: crossword_mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+volumes:
+  # Volume nommé pour persister les données de la base MongoDB
+  mongo_data:
