@@ -52,6 +52,7 @@ class CrosswordGenerator:
         self.size_limit = size_limit
         self.dictionnaire={}
 
+
     def extract_words(self, text: str,word_limit=1000000) -> List[str]:
         """Extrait les mots uniques, les mélange et les trie par longueur."""
         words = re.findall(r'\b[a-zA-ZÀ-ÿ]{4,15}\b', text.upper())
@@ -268,6 +269,10 @@ class CrosswordGenerator:
             "placed_words": final_words_info,
             "words_list": [info["word"] for info in final_words_info]
         }
+
+
+class GemmaDefinitionProvider:
+    pass
 
 
 class GeminiDefinitionProvider:
