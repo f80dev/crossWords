@@ -1,3 +1,5 @@
+import ollama
+import pymupdf
 import requests
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -10,12 +12,20 @@ import json
 import re
 import random
 import io
-import fitz  # PyMuPDF
 import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 
+
+PROMPT= """
+        Tu es un expert en création de mots croisés. 
+        Pour la liste de mots suivante : {words}, rédige une définition courte.
+        Le niveau de vocabulaire doit être strictement adapté à un enfant de {age} ans.
+
+        Ta réponse DOIT être uniquement un objet JSON valide.
+        Format attendu : {{"MOT1": "définition 1", "MOT2": "définition 2"}}
+        """
 
 app = FastAPI(title="Générateur de Mots Croisés API", version="1.0")
 
@@ -25,7 +35,7 @@ class DocumentExtractor:
     def extract_from_pdf(file_bytes: bytes) -> str:
         text = ""
         try:
-            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            doc = pymupdf.open(stream=file_bytes, filetype="pdf")
             for page in doc:
                 text += page.get_text()
             return text
@@ -272,7 +282,17 @@ class CrosswordGenerator:
 
 
 class GemmaDefinitionProvider:
-    pass
+    def get_definitions(self, words: list, age: int) -> dict:
+        response=ollama.chat(
+            model="gemma4",
+            messages=[
+                {
+                    "role":"user",
+                    "content":PROMPT.format(words=', '.join(words), age=age)
+                }
+            ]
+        )
+        return response["message"]["content"]
 
 
 class GeminiDefinitionProvider:
@@ -289,16 +309,9 @@ class GeminiDefinitionProvider:
         if not self.api_key or not words:
             return {word: "Définition non disponible (API Key manquante)" for word in words}
 
-        prompt = f"""
-        Tu es un expert en création de mots croisés. 
-        Pour la liste de mots suivante : {words}, rédige une définition courte.
-        Le niveau de vocabulaire doit être strictement adapté à un enfant de {age} ans.
 
-        Ta réponse DOIT être uniquement un objet JSON valide.
-        Format attendu : {{"MOT1": "définition 1", "MOT2": "définition 2"}}
-        """
         try:
-            response = self.model.generate_content(prompt)
+            response = self.model.generate_content(PROMPT.format(words=', '.join(words), age=age))
             clean_text = response.text.strip()
             if clean_text.startswith('```json'):
                 clean_text = clean_text[7:-3].strip()
@@ -312,7 +325,7 @@ class GeminiDefinitionProvider:
 
 
 extractor = DocumentExtractor()
-gemini_provider = GeminiDefinitionProvider()
+definition_provider = GemmaDefinitionProvider()
 
 # ==========================================
 # MODÈLES PYDANTIC (Validation des données)
@@ -336,7 +349,7 @@ class CrosswordExportRequest(BaseModel):
 # SERVICES
 # ==========================================
 
-
+#http://localhost:8000/api/v1/generate
 @app.post("/api/v1/generate")
 async def generate_crossword_endpoint(
         file: UploadFile = File(..., description="Fichier PDF ou EPUB"),
@@ -370,7 +383,7 @@ async def generate_crossword_endpoint(
         raise HTTPException(status_code=400, detail="Pas assez de mots valides pour générer une grille.")
 
     # 4. Récupération des définitions via Gemini
-    definitions = gemini_provider.get_definitions(grid_data["words_list"], age)
+    definitions = definition_provider.get_definitions(grid_data["words_list"], age)
 
     # 5. Construction de la réponse JSON finale pour le front-end ou n8n
     return {
