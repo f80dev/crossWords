@@ -1,4 +1,5 @@
-import ollama
+from  ollama import Client
+from transformers import pipeline
 import pymupdf
 import requests
 from fastapi.responses import StreamingResponse
@@ -7,7 +8,6 @@ from typing import List
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-import os
 import json
 import re
 import random
@@ -18,14 +18,17 @@ from bs4 import BeautifulSoup
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 
 
-PROMPT= """
-        Tu es un expert en création de mots croisés. 
+PROMPT= """ 
         Pour la liste de mots suivante : {words}, rédige une définition courte.
         Le niveau de vocabulaire doit être strictement adapté à un enfant de {age} ans.
-
-        Ta réponse DOIT être uniquement un objet JSON valide.
-        Format attendu : {{"MOT1": "définition 1", "MOT2": "définition 2"}}
         """
+
+PERSONA="""
+        Tu es un expert en création de mots croisés.
+        Ta réponse DOIT être uniquement un objet JSON valide.
+        """
+
+MODEL="google/gemma-4-26B-A4B-it"
 
 app = FastAPI(title="Générateur de Mots Croisés API", version="1.0")
 
@@ -281,51 +284,36 @@ class CrosswordGenerator:
         }
 
 
-class GemmaDefinitionProvider:
+class OllamaDefinitionProvider:
     def get_definitions(self, words: list, age: int) -> dict:
-        response=ollama.chat(
-            model="gemma4",
+        client = Client(host='http://127.0.0.1:11434', timeout=30.0)
+        response = client.chat(
+            model=MODEL,
             messages=[
                 {
-                    "role":"user",
-                    "content":PROMPT.format(words=', '.join(words), age=age)
+                    "role": "user",
+                    "content": PERSONA.format(age=age) + PROMPT.format(words=', '.join(words), age=age)
                 }
             ]
         )
-        return response["message"]["content"]
-
-
-class GeminiDefinitionProvider:
-    def __init__(self):
-        self.api_key = os.environ.get("GEMINI_API_KEY")
-        if not self.api_key:
-            print("⚠️ AVERTISSEMENT: GEMINI_API_KEY non définie.")
-        else:
-            #genai.configure(api_key=self.api_key)
-            #self.model = genai.GenerativeModel('gemini-1.5-flash')
-            pass
-
-    def get_definitions(self, words: list, age: int) -> dict:
-        if not self.api_key or not words:
-            return {word: "Définition non disponible (API Key manquante)" for word in words}
-
-
         try:
-            response = self.model.generate_content(PROMPT.format(words=', '.join(words), age=age))
-            clean_text = response.text.strip()
+            content = response["message"]["content"]
+            # Nettoyage pour extraire uniquement le JSON
+            clean_text = content.strip()
             if clean_text.startswith('```json'):
                 clean_text = clean_text[7:-3].strip()
             elif clean_text.startswith('```'):
                 clean_text = clean_text[3:-3].strip()
             return json.loads(clean_text)
-        except Exception as e:
-            print(f"Erreur Gemini : {e}")
-            return {word: "Erreur de génération" for word in words}
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Erreur de parsing JSON depuis Ollama: {e}")
+            return {word: "Définition non valide" for word in words}
+
 
 
 
 extractor = DocumentExtractor()
-definition_provider = GemmaDefinitionProvider()
+definition_provider = OllamaDefinitionProvider()
 
 # ==========================================
 # MODÈLES PYDANTIC (Validation des données)

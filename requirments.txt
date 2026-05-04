@@ -13,3 +13,4 @@ ebooklib
 bs4
 ollama
 pytest
+transformers
