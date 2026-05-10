@@ -29,9 +29,9 @@ PROMPT= """
 
 PERSONA="""
         Tu es un expert en création de mots croisés.
-        Ta réponse DOIT être uniquement un objet JSON valide.
+        Tu donnes des définitions courtes, en une seule phrase ou des synonymes adapté à l'age de ton lecteur. Tu ne cites jamais le mot à définir dans la définition
+        Ne donne jamais d'exemple utilisant le mot.
         """
-
 MODEL="google/gemma-4-26B-A4B-it"
 
 app = FastAPI(title="Générateur de Mots Croisés API", version="1.0")
@@ -241,7 +241,7 @@ class CrosswordGenerator:
 
         return list(found_words)
 
-    def build_grid(self, text: str, words_limit=1000000):
+    def build_grid(self, text: str, words_limit=1000000,rest=10):
         """Construit la grille en utilisant l'heuristique de meilleur placement aléatoire."""
         words_to_place = self.extract_words(text,words_limit)
 
@@ -284,7 +284,9 @@ class CrosswordGenerator:
                     chosen_placement = random.choice(best_placements)
                     self._place_word(chosen_placement["word"], chosen_placement["row"], chosen_placement["col"], chosen_placement["direction"])
                     words_to_place.remove(word)
-                    print(f"Placement de {word}")
+                    print(f"Placement de {word}. Il reste {rest} mots à placer")
+                    rest=rest-1
+                    if rest==0: break
                 else:
                     pass
 
@@ -325,27 +327,24 @@ class OllamaDefinitionProvider:
 
 
 class MinimaxDefinitionProvider:
-    def get_definitions(self, words: list[str], age: int) -> list:
+    def get_definitions(self, words: list[str], age: int) -> dict:
         client = anthropic.Anthropic(
             base_url="https://api.minimax.io/anthropic",
             api_key=environ.get("MINIMAX_API_KEY")  # Replace with your MiniMax API Key
         )
 
-        rc=[]
+        rc=dict()
         for w in words:
             response = client.messages.create(
                 model="MiniMax-M2.7",
                 max_tokens=500,
-                system=[
-                    {
-                        "type": "text",
-                        "text": "tu es un spécialiste de la langue française. Tu donnes des définitions de type mots croisés, courtes et adaptés à un enfant de "+str(age)+" ans pour les mots qu'on te demande",
-                    },
-                ],
-                messages=[{"role": "user", "content": "Donne les définitions de "+w}]
+                system=[{"type": "text","text": PERSONA}],
+                messages=[{"role": "user", "content": f"Donne une définition courte du mot : {w} compréhensible pour un enfant de {age} ans"}]
             )
-            rc.append({"word":w,"definition":response.content[1].text})
 
+            if len(response.content)>1:
+                rc[w]=response.content[1].text
+                print(f"{w} : {response.content[1].text}")
 
         return rc
 
@@ -404,7 +403,7 @@ async def generate_crossword_endpoint(
 
     # 3. Génération de la grille
     generator = CrosswordGenerator(size_limit=grid_size)
-    grid_data = generator.build_grid(text)
+    grid_data = generator.build_grid(text,rest=grid_size)
 
     if not grid_data or not grid_data["placed_words"]:
         raise HTTPException(status_code=400, detail="Pas assez de mots valides pour générer une grille.")
@@ -413,24 +412,26 @@ async def generate_crossword_endpoint(
     definitions = definition_provider.get_definitions(grid_data["words_list"], age)
 
     # 5. Construction de la réponse JSON finale pour le front-end ou n8n
-    return {
+    rc={
         "metadata": {
             "source_file": file.filename,
             "target_age": age,
             "grid_size": f"{len(grid_data['grid'][0])}x{len(grid_data['grid'])}"
         },
         "grid": grid_data["grid"],
-        "words": [
-            {
-                "word": item["word"],
-                "row": item["row"],
-                "col": item["col"],
-                "direction": item["direction"],
-                "definition": definitions.get(item["word"], "Définition introuvable")
-            }
-            for item in sorted(grid_data["placed_words"], key=lambda x: (x['row'], x['col']))
-        ]
+        "words": []
     }
+    for item in sorted(grid_data["placed_words"], key=lambda x: (x['row'], x['col'])):
+        rc["words"].append({
+            "word": item["word"],
+            "row": item["row"],
+            "col": item["col"],
+            "direction": item["direction"],
+            "definition": definitions[item["word"]]
+        })
+
+    return rc
+
 
 
 # Lancement serveur de développement (à taper dans le terminal) :
