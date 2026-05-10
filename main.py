@@ -1,3 +1,6 @@
+from os import environ
+
+import anthropic
 from  ollama import Client
 from transformers import pipeline
 import pymupdf
@@ -16,6 +19,7 @@ import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware # Import CORSMiddleware
 
 
 PROMPT= """ 
@@ -31,6 +35,15 @@ PERSONA="""
 MODEL="google/gemma-4-26B-A4B-it"
 
 app = FastAPI(title="Générateur de Mots Croisés API", version="1.0")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:4200"],  # Allow your frontend origin
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],  # Allow all headers
+)
 
 
 class DocumentExtractor:
@@ -60,7 +73,7 @@ class DocumentExtractor:
 
 class CrosswordGenerator:
     def __init__(self, size_limit=30):
-        self.grid = {}  # Utilisation d'un dictionnaire pour une grille "infinie"
+        self.grid = {}  # Utilisation d'un dictionnaire pour une grille "infinites"
         self.placed_words_info = []
         self.size_limit = size_limit
         self.dictionnaire={}
@@ -311,9 +324,35 @@ class OllamaDefinitionProvider:
 
 
 
+class MinimaxDefinitionProvider:
+    def get_definitions(self, words: list[str], age: int) -> list:
+        client = anthropic.Anthropic(
+            base_url="https://api.minimax.io/anthropic",
+            api_key=environ.get("MINIMAX_API_KEY")  # Replace with your MiniMax API Key
+        )
+
+        rc=[]
+        for w in words:
+            response = client.messages.create(
+                model="MiniMax-M2.7",
+                max_tokens=500,
+                system=[
+                    {
+                        "type": "text",
+                        "text": "tu es un spécialiste de la langue française. Tu donnes des définitions de type mots croisés, courtes et adaptés à un enfant de "+str(age)+" ans pour les mots qu'on te demande",
+                    },
+                ],
+                messages=[{"role": "user", "content": "Donne les définitions de "+w}]
+            )
+            rc.append({"word":w,"definition":response.content[1].text})
+
+
+        return rc
+
+
 
 extractor = DocumentExtractor()
-definition_provider = OllamaDefinitionProvider()
+definition_provider = MinimaxDefinitionProvider()
 
 # ==========================================
 # MODÈLES PYDANTIC (Validation des données)
@@ -501,3 +540,8 @@ async def export_crossword_pdf(request_data: CrosswordExportRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de la génération du PDF: {str(e)}")
+
+
+
+import uvicorn
+uvicorn.run(app, host="0.0.0.0", port=8000)
