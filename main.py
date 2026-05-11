@@ -1,8 +1,8 @@
 from os import environ
+import os # Added for path manipulation
 
 import anthropic
 from  ollama import Client
-from transformers import pipeline
 import pymupdf
 import requests
 from fastapi.responses import StreamingResponse
@@ -77,6 +77,28 @@ class CrosswordGenerator:
         self.placed_words_info = []
         self.size_limit = size_limit
         self.dictionnaire={}
+        self.load_dictionnaire() # Load dictionary on initialization
+
+
+    def load_dictionnaire(self):
+        """
+        Charge le dictionnaire français depuis un fichier JSON.
+        """
+        script_dir = os.path.dirname(__file__) # Get the directory of the current script
+        file_path = os.path.join(script_dir, "dictionnaire_francais.json")
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                self.dictionnaire = json.load(f)
+            print(f"Dictionnaire chargé avec {len(self.dictionnaire)} mots.")
+        except FileNotFoundError:
+            print(f"Erreur: Le fichier dictionnaire_francais.json n'a pas été trouvé à {file_path}")
+            self.dictionnaire = {}
+        except json.JSONDecodeError:
+            print(f"Erreur: Impossible de décoder le fichier JSON à {file_path}")
+            self.dictionnaire = {}
+        except Exception as e:
+            print(f"Une erreur inattendue est survenue lors du chargement du dictionnaire: {e}")
+            self.dictionnaire = {}
 
 
     def extract_words(self, text: str,word_limit=1000000) -> List[str]:
@@ -252,13 +274,15 @@ class CrosswordGenerator:
                          random.randint(0, self.size_limit-len(seed_word)) , "HORIZONTAL")
 
         # Boucle principale pour placer les mots restants
+        defs=dict()
+
         for word in list(words_to_place):
 
             #recherche la définition
-            if not word in self.dictionnaire.keys():
+            if not word.lower() in self.dictionnaire.keys():
                 self.dictionnaire[word] = self.consulter_ddf(word)
 
-            if word in self.dictionnaire.keys():
+            if word.lower() in self.dictionnaire.keys():
                 possible_placements = []
                 # Chercher des intersections valides
                 for i, letter_in_word in enumerate(word):
@@ -284,8 +308,10 @@ class CrosswordGenerator:
                     chosen_placement = random.choice(best_placements)
                     self._place_word(chosen_placement["word"], chosen_placement["row"], chosen_placement["col"], chosen_placement["direction"])
                     words_to_place.remove(word)
-                    print(f"Placement de {word}. Il reste {rest} mots à placer")
-                    rest=rest-1
+                    if len(self.dictionnaire[word.lower()])>0 and "definition" in self.dictionnaire[word.lower()][0]:
+                        defs[word]=self.dictionnaire[word.lower()][0]["definition"]
+                        print(f"Placement de {word} définie par {self.dictionnaire[word.lower()]}. Il reste {rest} mots à placer")
+                        rest=rest-1
                     if rest==0: break
                 else:
                     pass
@@ -295,7 +321,8 @@ class CrosswordGenerator:
         return {
             "grid": final_grid,
             "placed_words": final_words_info,
-            "words_list": [info["word"] for info in final_words_info]
+            "words_list": [info["word"] for info in final_words_info],
+            "definitions":defs
         }
 
 
@@ -327,24 +354,30 @@ class OllamaDefinitionProvider:
 
 
 class MinimaxDefinitionProvider:
-    def get_definitions(self, words: list[str], age: int) -> dict:
+    def get_definitions(self, words: list[str], age: int,dictionnaire:dict) -> dict:
+
+
         client = anthropic.Anthropic(
             base_url="https://api.minimax.io/anthropic",
             api_key=environ.get("MINIMAX_API_KEY")  # Replace with your MiniMax API Key
         )
 
         rc=dict()
-        for w in words:
-            response = client.messages.create(
-                model="MiniMax-M2.7",
-                max_tokens=500,
-                system=[{"type": "text","text": PERSONA}],
-                messages=[{"role": "user", "content": f"Donne une définition courte du mot : {w} compréhensible pour un enfant de {age} ans"}]
-            )
 
-            if len(response.content)>1:
-                rc[w]=response.content[1].text
-                print(f"{w} : {response.content[1].text}")
+
+
+        response = client.messages.create(
+            model="MiniMax-M2.7",
+            max_tokens=500,
+            system=[{"type": "text","text": PERSONA}],
+            messages=[{"role": "user", "content": f"Donne une définition compréhensible pour un enfant de {age} ans et courte pour chacun des mots de la liste suivante : {','.join(words)}. Sépare chaque définition par un * en rappelant le mot définie au début"}]
+        )
+
+
+        if len(response.content)>1:
+            reponse=response.content[1].text
+            for definition in reponse.split(" — "):
+                rc[definition.split(" - ")[0]]=definition.split(" - ")[1]
 
         return rc
 
@@ -403,13 +436,13 @@ async def generate_crossword_endpoint(
 
     # 3. Génération de la grille
     generator = CrosswordGenerator(size_limit=grid_size)
-    grid_data = generator.build_grid(text,rest=grid_size)
+    grid_data = generator.build_grid(text,rest=int(grid_size))
 
     if not grid_data or not grid_data["placed_words"]:
         raise HTTPException(status_code=400, detail="Pas assez de mots valides pour générer une grille.")
 
     # 4. Récupération des définitions via Gemini
-    definitions = definition_provider.get_definitions(grid_data["words_list"], age)
+    #definitions = definition_provider.get_definitions(grid_data["words_list"], age,generator.dictionnaire)
 
     # 5. Construction de la réponse JSON finale pour le front-end ou n8n
     rc={
@@ -419,16 +452,17 @@ async def generate_crossword_endpoint(
             "grid_size": f"{len(grid_data['grid'][0])}x{len(grid_data['grid'])}"
         },
         "grid": grid_data["grid"],
-        "words": []
+        "words": grid_data["definitions"]
     }
-    for item in sorted(grid_data["placed_words"], key=lambda x: (x['row'], x['col'])):
-        rc["words"].append({
-            "word": item["word"],
-            "row": item["row"],
-            "col": item["col"],
-            "direction": item["direction"],
-            "definition": definitions[item["word"]]
-        })
+
+    # for item in sorted(grid_data["placed_words"], key=lambda x: (x['row'], x['col'])):
+    #     rc["words"].append({
+    #         "word": item["word"],
+    #         "row": item["row"],
+    #         "col": item["col"],
+    #         "direction": item["direction"],
+    #         "definition": definitions[item["word"]]
+    #     })
 
     return rc
 
