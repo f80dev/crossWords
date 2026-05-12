@@ -7,7 +7,7 @@ import pymupdf
 import requests
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List
+from typing import List, Any
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -86,9 +86,10 @@ class CrosswordGenerator:
         """
         script_dir = os.path.dirname(__file__) # Get the directory of the current script
         file_path = os.path.join(script_dir, "dictionnaire_francais.json")
+        d=dict()
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
-                self.dictionnaire = json.load(f)
+                d = json.load(f)
             print(f"Dictionnaire chargé avec {len(self.dictionnaire)} mots.")
         except FileNotFoundError:
             print(f"Erreur: Le fichier dictionnaire_francais.json n'a pas été trouvé à {file_path}")
@@ -99,11 +100,14 @@ class CrosswordGenerator:
         except Exception as e:
             print(f"Une erreur inattendue est survenue lors du chargement du dictionnaire: {e}")
             self.dictionnaire = {}
+        for item in d:
+            self.dictionnaire[item.upper()]=d[item]
+
 
 
     def extract_words(self, text: str,word_limit=1000000) -> List[str]:
         """Extrait les mots uniques, les mélange et les trie par longueur."""
-        words = re.findall(r'\b[a-zA-ZÀ-ÿ]{4,15}\b', text.upper())
+        words = re.findall(r'\b[a-zA-ZÀ-ÿ]{3,15}\b', text.upper())
         unique_words = list(set(words))
         random.shuffle(unique_words)  # Mélange pour la variété
         return unique_words[:word_limit]
@@ -263,26 +267,44 @@ class CrosswordGenerator:
 
         return list(found_words)
 
+
+
+    def get_definition(self,word:str) -> str | None:
+        if word in self.dictionnaire.keys():
+            if self.dictionnaire[word] and len(self.dictionnaire[word])>0 and "definition" in self.dictionnaire[word][0]:
+                rc=self.dictionnaire[word][0]["definition"]
+                if not word.lower() in rc.lower():
+                    return rc
+        return None
+
+
+
     def build_grid(self, text: str, words_limit=1000000,rest=10):
         """Construit la grille en utilisant l'heuristique de meilleur placement aléatoire."""
         words_to_place = self.extract_words(text,words_limit)
 
         # Place le premier mot (mot souche)
-        seed_word = words_to_place.pop(0)
+        defs=dict()
+        seed_word=""
+        for _ in range(100):
+            seed_word = words_to_place.pop(0)
+            if self.get_definition(seed_word):
+                defs[seed_word]=self.get_definition(seed_word)
+                break
+
         self._place_word(seed_word,
                          random.randint(0, self.size_limit-len(seed_word)),
-                         random.randint(0, self.size_limit-len(seed_word)) , "HORIZONTAL")
+                         random.randint(0, self.size_limit-len(seed_word)) ,
+                         random.choice(["HORIZONTAL","VERTICAL"]))
 
         # Boucle principale pour placer les mots restants
-        defs=dict()
-
         for word in list(words_to_place):
 
             #recherche la définition
-            if not word.lower() in self.dictionnaire.keys():
+            if not word in self.dictionnaire.keys():
                 self.dictionnaire[word] = self.consulter_ddf(word)
 
-            if word.lower() in self.dictionnaire.keys():
+            if word in self.dictionnaire.keys():
                 possible_placements = []
                 # Chercher des intersections valides
                 for i, letter_in_word in enumerate(word):
@@ -305,14 +327,14 @@ class CrosswordGenerator:
                 best_placements = [p for p in possible_placements if p['score'] == max_score]
 
                 if best_placements:
-                    chosen_placement = random.choice(best_placements)
-                    self._place_word(chosen_placement["word"], chosen_placement["row"], chosen_placement["col"], chosen_placement["direction"])
-                    words_to_place.remove(word)
-                    if len(self.dictionnaire[word.lower()])>0 and "definition" in self.dictionnaire[word.lower()][0]:
-                        defs[word]=self.dictionnaire[word.lower()][0]["definition"]
-                        print(f"Placement de {word} définie par {self.dictionnaire[word.lower()]}. Il reste {rest} mots à placer")
+                    defs[word]=self.get_definition(word)
+                    if defs[word]:
+                        chosen_placement = random.choice(best_placements)
+                        self._place_word(word, chosen_placement["row"], chosen_placement["col"], chosen_placement["direction"])
+                        words_to_place.remove(word)
+                        print(f"Placement de {word} définie par {defs[word]}. Il reste {rest-1} mots à placer")
+                        if rest==1: break
                         rest=rest-1
-                    if rest==0: break
                 else:
                     pass
 
@@ -401,6 +423,7 @@ class WordInfo(BaseModel):
 class CrosswordExportRequest(BaseModel):
     grid: List[List[str]]
     words: List[WordInfo]
+    metadata:dict
 
 
 
@@ -409,11 +432,12 @@ class CrosswordExportRequest(BaseModel):
 # ==========================================
 
 #http://localhost:8000/api/v1/generate
-@app.post("/api/v1/generate")
+@app.post("/api/v1/generate", response_class=StreamingResponse)
 async def generate_crossword_endpoint(
         file: UploadFile = File(..., description="Fichier PDF ou EPUB"),
         age: int = Form(..., description="Âge cible pour les définitions"),
-        grid_size: int = Form(20, description="Taille de la grille (ex: 20x20)")
+        grid_size: int = Form(20, description="Taille de la grille (ex: 20x20)"),
+        numWords: int = Form(20, description="Nombre de mot à inclure dans la grille)")
 ):
     """
     Endpoint principal : Reçoit un fichier, extrait le texte, génère la grille
@@ -436,7 +460,7 @@ async def generate_crossword_endpoint(
 
     # 3. Génération de la grille
     generator = CrosswordGenerator(size_limit=grid_size)
-    grid_data = generator.build_grid(text,rest=int(grid_size))
+    grid_data = generator.build_grid(text,rest=numWords)
 
     if not grid_data or not grid_data["placed_words"]:
         raise HTTPException(status_code=400, detail="Pas assez de mots valides pour générer une grille.")
@@ -452,19 +476,25 @@ async def generate_crossword_endpoint(
             "grid_size": f"{len(grid_data['grid'][0])}x{len(grid_data['grid'])}"
         },
         "grid": grid_data["grid"],
-        "words": grid_data["definitions"]
+        "words": []
     }
 
-    # for item in sorted(grid_data["placed_words"], key=lambda x: (x['row'], x['col'])):
-    #     rc["words"].append({
-    #         "word": item["word"],
-    #         "row": item["row"],
-    #         "col": item["col"],
-    #         "direction": item["direction"],
-    #         "definition": definitions[item["word"]]
-    #     })
 
-    return rc
+    for item in sorted(grid_data["placed_words"], key=lambda x: (x['row'], x['col'])):
+        rc["words"].append({
+            "word": item["word"],
+            "row": item["row"],
+            "col": item["col"],
+            "direction": item["direction"],
+            "definition": grid_data["definitions"][item["word"]]
+        })
+
+    pdf_buffer = PDFExportService.generate_pdf(rc)
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={file.filename}_crossword.pdf"}
+    )
 
 
 
@@ -477,7 +507,7 @@ async def generate_crossword_endpoint(
 
 class PDFExportService:
     @staticmethod
-    def generate_pdf(data: CrosswordExportRequest) -> io.BytesIO:
+    def generate_pdf(data: dict) -> io.BytesIO:
         buffer = io.BytesIO()
         c = canvas.Canvas(buffer, pagesize=A4)
         width, height = A4
@@ -488,23 +518,23 @@ class PDFExportService:
         c.drawString(50, height - 50, "Grille de Mots Croisés")
 
         cell_size = 20
-        grid_width = len(data.grid[0]) * cell_size
-        grid_height = len(data.grid) * cell_size
+        grid_width = len(data["grid"][0]) * cell_size
+        grid_height = len(data["grid"]) * cell_size
         x_offset = (width - grid_width) / 2
         y_offset = height - 100
 
         # Numérotation des colonnes (nombres)
         c.setFont("Helvetica", 10)
-        for i in range(len(data.grid[0])):
+        for i in range(len(data["grid"][0])):
             c.drawString(x_offset + i * cell_size + cell_size / 2 - 3, y_offset + 10, str(i + 1))
 
         # Numérotation des lignes (lettres)
-        for i in range(len(data.grid)):
+        for i in range(len(data["grid"])):
             c.drawString(x_offset - 15, y_offset - i * cell_size - cell_size / 2 + 3, chr(65 + i))
 
         # Dessin de la grille vide
         c.setLineWidth(1)
-        for r_idx, row in enumerate(data.grid):
+        for r_idx, row in enumerate(data["grid"]):
             for c_idx, cell in enumerate(row):
                 x = x_offset + c_idx * cell_size
                 y = y_offset - r_idx * cell_size - cell_size
@@ -523,10 +553,10 @@ class PDFExportService:
         y_text -= 25
 
         c.setFont("Helvetica", 10)
-        for idx, word_info in enumerate(data.words):
-            dir_fr = "Horiz." if word_info.direction == "HORIZONTAL" else "Vert."
-            start_char = chr(65 + word_info.row)
-            text_line = f"{idx + 1}. ({start_char}{word_info.col + 1} {dir_fr}) : {word_info.definition}"
+        for idx, word_info in enumerate(data["words"]):
+            dir_fr = "Horiz." if word_info['direction'] == "HORIZONTAL" else "Vert."
+            start_char = chr(65 + word_info['row'])
+            text_line = f"{idx + 1}. ({start_char}{word_info['col'] + 1} {dir_fr}) : {word_info['definition']}"
             if y_text < 50:
                 c.showPage()
                 y_text = height - 50
@@ -540,7 +570,7 @@ class PDFExportService:
         c.drawString(50, height - 50, "Solution de la Grille")
 
         # Redessiner la grille avec les réponses
-        for r_idx, row in enumerate(data.grid):
+        for r_idx, row in enumerate(data["grid"]):
             for c_idx, cell in enumerate(row):
                 x = x_offset + c_idx * cell_size
                 y = y_offset - r_idx * cell_size - cell_size
