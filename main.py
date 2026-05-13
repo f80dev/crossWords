@@ -36,13 +36,14 @@ MODEL="google/gemma-4-26B-A4B-it"
 
 app = FastAPI(title="Générateur de Mots Croisés API", version="1.0")
 
-# Add CORS middleware
+# CORS — origines configurables via variable d'environnement (séparées par des virgules)
+_cors_origins = environ.get("CORS_ORIGINS", "http://localhost:4200").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4200"],  # Allow your frontend origin
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods (GET, POST, PUT, DELETE, etc.)
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -52,11 +53,19 @@ class DocumentExtractor:
         text = ""
         try:
             doc = pymupdf.open(stream=file_bytes, filetype="pdf")
+            if doc.page_count == 0:
+                raise ValueError("Le PDF ne contient aucune page")
             for page in doc:
-                text += page.get_text()
+                page_text = page.get_text()
+                if page_text.strip():
+                    text += page_text + "\n"
+            if not text.strip():
+                raise ValueError("Impossible d'extraire du texte du PDF (document peut-être scanné ou protégé)")
             return text
+        except ValueError:
+            raise
         except Exception as e:
-            raise Exception(f"Erreur de lecture PDF: {str(e)}")
+            raise Exception(f"Erreur de lecture PDF: {str(e)}") from e
 
     @staticmethod
     def extract_from_epub(file_bytes: bytes) -> str:

@@ -8,9 +8,7 @@ google-generativeai
 reportlab
 pydantic
 httpx
-reportlab
-ebooklib
-bs4
 ollama
 pytest
 transformers
+anthropic
