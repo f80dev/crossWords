@@ -561,11 +561,40 @@ class PDFExportService:
         c.drawString(50, y_text, "Définitions :")
         y_text -= 25
 
+        # Séparer les définitions horizontales et verticales
+        horizontal_defs = [w for w in data["words"] if w['direction'] == "HORIZONTAL"]
+        vertical_defs = [w for w in data["words"] if w['direction'] == "VERTICAL"]
+
+        c.setFont("Helvetica-Bold", 11)
+        if y_text < 50:
+            c.showPage()
+            y_text = height - 50
+        c.drawString(50, y_text, "Définitions Horizontales :")
+        y_text -= 15
+
         c.setFont("Helvetica", 10)
-        for idx, word_info in enumerate(data["words"]):
-            dir_fr = "Horiz." if word_info['direction'] == "HORIZONTAL" else "Vert."
+        for idx, word_info in enumerate(horizontal_defs):
             start_char = chr(65 + word_info['row'])
-            text_line = f"{idx + 1}. ({start_char}{word_info['col'] + 1} {dir_fr}) : {word_info['definition']}"
+            text_line = f"{idx + 1}. ({start_char}{word_info['col'] + 1} Horiz.) : {word_info['definition']}"
+            if y_text < 50:
+                c.showPage()
+                y_text = height - 50
+                c.setFont("Helvetica", 10)
+            c.drawString(50, y_text, text_line)
+            y_text -= 15
+
+        y_text -= 10
+        c.setFont("Helvetica-Bold", 11)
+        if y_text < 50:
+            c.showPage()
+            y_text = height - 50
+        c.drawString(50, y_text, "Définitions Verticales :")
+        y_text -= 15
+
+        c.setFont("Helvetica", 10)
+        for idx, word_info in enumerate(vertical_defs):
+            start_char = chr(65 + word_info['row'])
+            text_line = f"{idx + 1}. ({start_char}{word_info['col'] + 1} Vert.) : {word_info['definition']}"
             if y_text < 50:
                 c.showPage()
                 y_text = height - 50
